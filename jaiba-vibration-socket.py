@@ -35,6 +35,19 @@ WIRE_HOLE_OFFSET     = 28.0   # [HOLE_RADIUS] distance from hex center to hole c
 WIRE_HOLE_ANGLE      = 180    # [WIRE_HOLE_ANGLE] 180 = toward the left flat
 WIRE_SEGMENTS        = 32
 
+# ---- BREAK-AWAY SUPPORT GRID (inside the 5mm underside recess) -------------
+# A loose lattice of thin ribs standing on the print bed under the recess
+# ceiling, so the 78mm roof prints over a grid of ~7mm cells instead of a
+# 78mm bridge. It is a separate shell: it never touches the socket, so it
+# lifts out in one piece after printing. Set SUPPORT_RIBS = False to use
+# slicer supports instead.
+SUPPORT_RIBS      = True
+SUPPORT_RIB_T     = 1.2    # rib thickness (3 lines with a 0.4mm nozzle)
+SUPPORT_PITCH     = 8.0    # rib centre-to-centre; open cell = pitch - rib_t
+SUPPORT_GAP       = 0.2    # gap under the roof - match your layer height
+SUPPORT_SIDE_GAP  = 0.4    # gap between the grid and the recess wall
+SUPPORT_MIN_CELL  = 4.0    # drop clipped edge cells smaller than this (mm^2)
+
 SHOW_SENSOR_PROXY = True      # wireframe puck in the viewport (not exported)
 CENTER          = (0.0, 0.0)
 OBJ_NAME        = "TPU_Socket"
@@ -47,6 +60,7 @@ INNER_FLAT   = PAD_FLAT + 2 * FIT_CLEARANCE
 OUTER_FLAT   = INNER_FLAT + 2 * WALL_T          # 84.0 with defaults
 Z_RECESS_TOP = PAD_HEIGHT                       # 5.0
 Z_FLOOR_TOP  = Z_RECESS_TOP + FLOOR_T           # 8.0
+Z_RIB_TOP    = Z_RECESS_TOP - SUPPORT_GAP                 # 4.8 (top of the support ribs)
 Z_BED        = TOTAL_H - SENSOR_H               # 16.0 (sensor bottom / honeycomb top)
 POCKET_R     = SENSOR_D / 2.0 + SENSOR_CLEARANCE
 RING_OUT_R   = POCKET_R + RING_T
@@ -126,6 +140,48 @@ def honeycomb_cells():
             cells.append(pts)
     return cells
 
+def clip_convex(subject, clip):
+    """Sutherland-Hodgman: clip a convex polygon by a convex CCW polygon."""
+    out = list(subject)
+    for i in range(len(clip)):
+        a, b = clip[i], clip[(i + 1) % len(clip)]
+        inp, out = out, []
+        if not inp:
+            break
+        def side(p):
+            return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+        for k in range(len(inp)):
+            p, q = inp[k], inp[(k + 1) % len(inp)]
+            sp, sq = side(p), side(q)
+            if sp >= 0:
+                out.append(p)
+            if (sp >= 0) != (sq >= 0):
+                t = sp / (sp - sq)
+                out.append((p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])))
+    cleaned = []
+    for pt in out:
+        if not cleaned or math.hypot(pt[0] - cleaned[-1][0], pt[1] - cleaned[-1][1]) > 1e-6:
+            cleaned.append(pt)
+    if len(cleaned) > 1 and math.hypot(cleaned[0][0] - cleaned[-1][0], cleaned[0][1] - cleaned[-1][1]) <= 1e-6:
+        cleaned.pop()
+    return cleaned
+
+def support_cells():
+    """Open cells of the break-away grid: a square lattice clipped to a hex
+    inset by one rib thickness, so a solid border rib always surrounds the
+    grid and no cell touches the outline."""
+    inset = hex_corners(CENTER[0], CENTER[1], INNER_FLAT - 2 * SUPPORT_SIDE_GAP - 2 * SUPPORT_RIB_T)
+    h = SUPPORT_PITCH - SUPPORT_RIB_T
+    cells = []
+    for i in range(-10, 11):
+        for j in range(-10, 11):
+            x, y = CENTER[0] + i * SUPPORT_PITCH, CENTER[1] + j * SUPPORT_PITCH
+            sq = [(x - h / 2, y - h / 2), (x + h / 2, y - h / 2), (x + h / 2, y + h / 2), (x - h / 2, y + h / 2)]
+            c = clip_convex(sq, inset)
+            if len(c) >= 3 and poly_area(c) >= SUPPORT_MIN_CELL:
+                cells.append(c)
+    return cells
+
 def cleanup():
     for name in (OBJ_NAME, "SensorProxy"):
         obj = bpy.data.objects.get(name)
@@ -175,8 +231,20 @@ def build_socket():
             loops.append(list(h) if signed(h) < 0 else list(reversed(h)))
         flat = [v for lp in loops for v in lp]
         polys = [[Vector((v.co.x, v.co.y, 0.0)) for v in lp] for lp in loops]
-        for a, b, c in tessellate_polygon(polys):
-            bm.faces.new([flat[a], flat[b], flat[c]])
+        made = [bm.faces.new([flat[a], flat[b], flat[c]]) for a, b, c in tessellate_polygon(polys)]
+        # Aligned cell edges can make the tessellator emit zero-area
+        # (collinear) triangles. Flipping diagonals removes them.
+        if any(f.calc_area() < 1e-6 for f in made):
+            edges = list({e for f in made for e in f.edges})
+            for _ in range(4):
+                bmesh.ops.beautify_fill(bm, faces=[f for f in made if f.is_valid],
+                                        edges=[e for e in edges if e.is_valid], method='AREA')
+                made = [f for f in made if f.is_valid]
+                if not any(f.calc_area() < 1e-6 for f in made):
+                    break
+            # beautify_fill can replace face objects; re-collect from edges
+            made = list({f for e in edges if e.is_valid for f in e.link_faces})
+        return made
 
     # -- hex shell: outer wall, rims, recess wall, cup wall ---------------------
     o0 = loop(hex_corners(cx, cy, OUTER_FLAT), 0.0)
@@ -232,6 +300,24 @@ def build_socket():
             bed_holes.append(b16)
         face_with_holes(ci16, bed_holes)    # honeycomb wall tops = sensor bed
 
+    rib_cells = []
+    rib_outer_pts = None
+    if SUPPORT_RIBS:
+        rib_outer_pts = hex_corners(cx, cy, INNER_FLAT - 2 * SUPPORT_SIDE_GAP)
+        rib_cells = support_cells()
+        rob = loop(rib_outer_pts, 0.0)
+        rot = loop(rib_outer_pts, Z_RIB_TOP)
+        quads(rob, rot)                       # outer border rib wall
+        rib_bots, rib_tops = [], []
+        for pts in rib_cells:
+            cb = loop(pts, 0.0)
+            ct = loop(pts, Z_RIB_TOP)
+            quads(cb, ct)                     # cell walls
+            rib_bots.append(cb)
+            rib_tops.append(ct)
+        face_with_holes(rob, rib_bots)        # grid bottom (on the bed)
+        face_with_holes(rot, rib_tops)        # grid top (0.2mm under the roof)
+
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     bm.normal_update()
     bm.to_mesh(mesh)
@@ -252,6 +338,10 @@ def build_socket():
         a_bore = poly_area(circle_pts(WIRE_CX, WIRE_CY, BORE_R, WIRE_SEGMENTS)) if WIRE_HOLE else 0.0
         expected += (a_co - a_void - a_bore) * (Z_BED - Z_FLOOR_TOP) + (a_co - a_ci) * (TOTAL_H - Z_BED)
         solid_frac = (a_ci - a_void - a_bore) / a_ci
+    if SUPPORT_RIBS:
+        expected += (poly_area(rib_outer_pts) - sum(poly_area(c) for c in rib_cells)) * Z_RIB_TOP
+        print(f"Support grid: {len(rib_cells)} open cells, ribs {SUPPORT_RIB_T:.1f}mm, "
+              f"top at z={Z_RIB_TOP:.2f} ({SUPPORT_GAP:.2f}mm under the roof)")
     nm, za, vol = mesh_stats(obj)
     print(f"Honeycomb cells: {len(voids)}" + (f", solid fraction inside pocket {solid_frac*100:.0f}%" if FILL else ""))
     print(f"Non-manifold edges: {nm} (expect 0), zero-area faces: {za} (expect 0)")

@@ -73,6 +73,11 @@ Re-running deletes and rebuilds `TPU_Socket`.
 | `RING_T` | 2.0 | Sensor ring wall |
 | `FILL_WALL_T` | 2.0 | Honeycomb wall; also the minimum solid band next to the ring and bore |
 | `CELL_INNER` | 8.0 | Cell width; smaller is stiffer |
+| `SUPPORT_RIBS` | True | Break-away support grid in the underside recess (see below) |
+| `SUPPORT_RIB_T` | 1.2 | Rib thickness |
+| `SUPPORT_PITCH` | 8.0 | Rib spacing; open cells are pitch minus rib thickness |
+| `SUPPORT_GAP` | 0.2 | Gap between rib tops and the roof; match your layer height |
+| `SUPPORT_SIDE_GAP` | 0.4 | Gap between the grid and the recess wall |
 | `WIRE_HOLE` | True | Wire path through floor and fill |
 | `WIRE_HOLE_DIAMETER` | 12.0 | Floor hole, as in the tray |
 | `WIRE_BORE_DIAMETER` | 10.0 | Bore through the fill (see below) |
@@ -86,9 +91,20 @@ Re-running deletes and rebuilds `TPU_Socket`.
 - **The ring is attached only through the floor and honeycomb.** It is not tied to the hex wall, so the moat isolates the sensor from the neighbors. Optional bridging ribs are not implemented.
 - **Open-top cells, no skin.** This avoids a 68 mm TPU bridge. The cells are sealed at the bottom by the floor, so silicone could be poured in later.
 
+## Break-away support grid
+
+The 78 mm recess ceiling is a large bridge in TPU. Instead of relying on slicer supports, the script can add a thin rib grid inside the recess:
+
+- It stands on the print bed (z 0 to 4.8) and stops `SUPPORT_GAP` (0.2 mm) short of the roof, and 0.4 mm short of the recess wall. It is a **separate shell in the same STL**, so it never fuses to the socket.
+- The roof prints over a grid of about 6.8 mm square cells, each supported on all four sides, instead of one 78 mm span.
+- After printing, the grid lifts out in one piece. If the roof bonds to the rib tops, a small increase in `SUPPORT_GAP` helps.
+- Turn off the slicer's own supports for the recess when using this. Slicers usually ask whether a two-shell STL is a multi-part object; keep it as one object.
+- Set `SUPPORT_RIBS = False` to export the socket alone (for example when comparing with slicer supports).
+- The grid is untested on a printer. It sits under the wire hole too, which is harmless because it is removed afterwards.
+
 ## Known issues and printing notes
 
-- **Bridging.** The 78 mm underside recess ceiling is a large bridge in TPU. Printing cup-up with support in the recess is the likely approach. Untested.
+- **Bridging.** The 78 mm underside recess ceiling is handled by the break-away grid above, printed cup-up. Untested.
 - **Ring base.** A small fillet at the ring base may help avoid cracking in TPU. Not added.
 - **Untested.** Sensor fit, stiffness, crosstalk, print settings and glue are unverified.
 
