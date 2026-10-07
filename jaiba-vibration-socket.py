@@ -8,17 +8,24 @@ print("=== TPU HEX SOCKET (piezo vibration damper) ===")
 # Values marked [from tray script] were read from the tray's Blender script.
 PAD_FLAT        = 78.0   # [INNER_TILE_WIDTH]  pad, flat-to-flat
 PAD_HEIGHT      = 5.0    # [INNER_TILE_HEIGHT] pad height -> depth of the underside recess
-WALL_T          = 3.0    # socket wall (2 x 3 = the 6mm gap between pads)
-FLOOR_T         = 3.0    # floor slab between the underside recess and the cup
-TOTAL_H         = 26.0   # overall socket height (matches tray WALL_HEIGHT)
+WALL_T          = 1.6    # socket wall: 2 mm each side, 2 mm gap to the neighbour on the 84 mm pitch
+FLOOR_T         = 1.6    # floor slab between the underside recess and the cup
+TOTAL_H         = 26.0   # overall socket height (matches tray WALL_HEIGHT; the sensor ring reaches this)
+WALL_UP         = 0.0    # height of the hex wall ABOVE the floor. 0 = no wall (floor edge is the
+                         # outline); 4 = low finger guard; TOTAL_H - floor top = full wall as before.
 FIT_CLEARANCE   = 0.0    # extra room PER SIDE around the pad (see README)
 
 # ---- SENSOR POCKET + SUPPORT FILL ----------------------------------------
-FILL                = True    # False = plain cup (no ring / honeycomb)
-SENSOR_D            = 67.5    # piezo sensor puck diameter
+FILL                = True    # False = plain cup (no ring / pocket at all)
+HONEYCOMB           = False   # True = old honeycomb sensor support in the pocket.
+                              # False = flat pocket floor (at the top of the floor slab)
+                              # for gluing the cookie cushion in.
+CUSHION_D           = 64.0    # cookie cushion diameter (viewport proxy + fit printout only)
+CUSHION_H           = 17.0    # cookie cushion thickness
+SENSOR_D            = 68.0    # piezo sensor puck diameter
 SENSOR_H            = 10.0    # puck height -> top sits flush with TOTAL_H
-SENSOR_CLEARANCE    = 0.2     # per side, pocket radius = SENSOR_D/2 + this
-RING_T              = 2.0     # retaining ring wall around the sensor
+SENSOR_CLEARANCE    = 0.25    # per side, pocket radius = SENSOR_D/2 + this -> 68.0 mm pocket
+RING_T              = 1.6     # retaining ring wall around the sensor
 FILL_WALL_T         = 2.0     # honeycomb wall thickness (also min solid band
                               # kept between cells and the ring / wire bore)
 CELL_INNER          = 8.0     # honeycomb cell width, flat-to-flat (open space)
@@ -26,7 +33,8 @@ MIN_MOAT            = 1.0     # sanity check: ring must stay this far from hex w
 
 # ---- WIRE HOLE (same position as the tray's per-tile hole) ----------------
 WIRE_HOLE            = True
-WIRE_HOLE_DIAMETER   = 12.0   # [WIRE_HOLE_DIAMETER] hole through the 3mm floor
+WIRE_HOLE_DIAMETER   = 10.0   # hole through the 3mm floor (the tray's is 12). With the 68mm pocket,
+                              # a 12mm hole at 28mm offset would just touch the pocket wall (r=34.0).
 WIRE_BORE_DIAMETER   = 10.0   # bore through the honeycomb above the floor. Smaller
                               # than the floor hole on purpose: a 12mm bore at 28mm
                               # offset reaches r=34.0 vs the pocket wall at 33.95,
@@ -57,11 +65,12 @@ RING_SEGMENTS   = 72
 
 # ---- DERIVED ------------------------------------------------------------
 INNER_FLAT   = PAD_FLAT + 2 * FIT_CLEARANCE
-OUTER_FLAT   = INNER_FLAT + 2 * WALL_T          # 84.0 with defaults
+OUTER_FLAT   = INNER_FLAT + 2 * WALL_T          # 83.4 with defaults
 Z_RECESS_TOP = PAD_HEIGHT                       # 5.0
 Z_FLOOR_TOP  = Z_RECESS_TOP + FLOOR_T           # 8.0
 Z_RIB_TOP    = Z_RECESS_TOP - SUPPORT_GAP                 # 4.8 (top of the support ribs)
 Z_BED        = TOTAL_H - SENSOR_H               # 16.0 (sensor bottom / honeycomb top)
+Z_WALL_TOP   = min(TOTAL_H, Z_FLOOR_TOP + WALL_UP)   # top of the hex wall (= floor top when there is no wall)
 POCKET_R     = SENSOR_D / 2.0 + SENSOR_CLEARANCE
 RING_OUT_R   = POCKET_R + RING_T
 WIRE_R       = WIRE_HOLE_DIAMETER / 2.0
@@ -73,18 +82,25 @@ WIRE_CX = CENTER[0] + WIRE_HOLE_OFFSET * math.cos(_a)
 WIRE_CY = CENTER[1] + WIRE_HOLE_OFFSET * math.sin(_a)
 
 print(f"Outer hex {OUTER_FLAT:.2f} / interior {INNER_FLAT:.2f} flat-to-flat, height {TOTAL_H:.1f}")
-print(f"Z: recess 0..{Z_RECESS_TOP:.1f} | floor ..{Z_FLOOR_TOP:.1f} | honeycomb ..{Z_BED:.1f} | top {TOTAL_H:.1f}")
+print(f"Z: recess 0..{Z_RECESS_TOP:.1f} | floor ..{Z_FLOOR_TOP:.1f} | " + (f"honeycomb ..{Z_BED:.1f} | " if HONEYCOMB else "") + f"top {TOTAL_H:.1f}")
 if FILL:
-    print(f"Sensor pocket r={POCKET_R:.2f}, ring outer r={RING_OUT_R:.2f}, "
-          f"moat at flats {INNER_FLAT/2 - RING_OUT_R:.2f}mm")
+    print(f"Sensor pocket r={POCKET_R:.2f}, ring outer r={RING_OUT_R:.2f}" +
+          (f", moat at flats {INNER_FLAT/2 - RING_OUT_R:.2f}mm" if WALL_UP > 0 else ", no hex wall above the floor"))
+print(f"Hex wall above the floor: " + (f"{Z_WALL_TOP - Z_FLOOR_TOP:.1f} mm (to z={Z_WALL_TOP:.1f})" if WALL_UP > 0 else "none"))
 if OUTER_FLAT > TILE_PITCH + 1e-6:
     print(f"WARNING: outer {OUTER_FLAT:.2f} > tile pitch {TILE_PITCH:.2f}: adjacent sockets will overlap")
 if Z_BED <= Z_FLOOR_TOP:
     raise ValueError("Sensor too tall: no room left above the floor for the support zone")
-if FILL and RING_OUT_R > INNER_FLAT / 2.0 - MIN_MOAT:
+if FILL and WALL_UP > 0 and RING_OUT_R > INNER_FLAT / 2.0 - MIN_MOAT:
     raise ValueError("Sensor ring is too close to (or past) the hex wall")
-if FILL and WIRE_HOLE and WIRE_HOLE_OFFSET + BORE_R > POCKET_R - 0.5:
-    raise ValueError("Wire bore comes within 0.5mm of the pocket wall - reduce WIRE_BORE_DIAMETER")
+if FILL and WIRE_HOLE and WIRE_HOLE_OFFSET + (BORE_R if HONEYCOMB else WIRE_R) > POCKET_R - 0.5:
+    raise ValueError("Wire hole/bore comes within 0.5mm of the pocket wall - reduce its diameter")
+if FILL and HONEYCOMB and WIRE_HOLE and WIRE_R <= BORE_R:
+    raise ValueError("With HONEYCOMB = True the floor hole must be wider than WIRE_BORE_DIAMETER (it leaves a ledge)")
+if FILL and not HONEYCOMB:
+    depth = TOTAL_H - Z_FLOOR_TOP
+    print(f"Pocket {2*POCKET_R:.1f} mm wide, {depth:.1f} mm deep (floor at z={Z_FLOOR_TOP:.1f}). "
+          f"Cushion {CUSHION_D:g} x {CUSHION_H:g} leaves {depth - CUSHION_H:+.1f} mm below the top")
 
 # ---- GEOMETRY HELPERS ------------------------------------------------------
 def hex_corners(cx, cy, flat_width):
@@ -246,19 +262,24 @@ def build_socket():
             made = list({f for e in edges if e.is_valid for f in e.link_faces})
         return made
 
-    # -- hex shell: outer wall, rims, recess wall, cup wall ---------------------
+    # -- hex shell: outer wall, rims, recess wall, (optional) cup wall ----------
     o0 = loop(hex_corners(cx, cy, OUTER_FLAT), 0.0)
-    o1 = loop(hex_corners(cx, cy, OUTER_FLAT), TOTAL_H)
     i0 = loop(hex_corners(cx, cy, INNER_FLAT), 0.0)
     i1 = loop(hex_corners(cx, cy, INNER_FLAT), Z_RECESS_TOP)
-    i2 = loop(hex_corners(cx, cy, INNER_FLAT), Z_FLOOR_TOP)
-    i3 = loop(hex_corners(cx, cy, INNER_FLAT), TOTAL_H)
-    quads(o0, o1)                              # outer wall
-    quads([o0[i] for i in range(6)], i0)       # bottom rim  (o0 -> i0)
+    quads(o0, i0)                              # bottom rim  (winding corrected by recalc_face_normals below)
     quads(i0, i1)                              # underside recess wall
-    quads(i2, i3)                              # cup wall
-    quads(o1, i3)                              # top rim
-    # (quads() winding for rims is corrected by recalc_face_normals below)
+    if WALL_UP > 0:
+        o1 = loop(hex_corners(cx, cy, OUTER_FLAT), Z_WALL_TOP)
+        i2 = loop(hex_corners(cx, cy, INNER_FLAT), Z_FLOOR_TOP)
+        i3 = loop(hex_corners(cx, cy, INNER_FLAT), Z_WALL_TOP)
+        quads(o0, o1)                          # outer wall
+        quads(i2, i3)                          # cup wall
+        quads(o1, i3)                          # top rim
+        floor_outline = i2                     # floor top is bounded by the inner hex
+    else:
+        o1 = loop(hex_corners(cx, cy, OUTER_FLAT), Z_FLOOR_TOP)
+        quads(o0, o1)                          # outer wall stops at the floor
+        floor_outline = o1                     # floor top reaches the outer edge
 
     # -- wire hole through the 3mm floor -----------------------------------------
     hole_pts = circle_pts(WIRE_CX, WIRE_CY, WIRE_R, WIRE_SEGMENTS) if WIRE_HOLE else None
@@ -270,18 +291,24 @@ def build_socket():
 
     voids = []
     if not FILL:
-        face_with_holes(i2, [fh8] if WIRE_HOLE else [])   # plain cup floor
+        face_with_holes(floor_outline, [fh8] if WIRE_HOLE else [])   # plain cup floor
     else:
-        voids = honeycomb_cells()
+        voids = honeycomb_cells() if HONEYCOMB else []
         N = RING_SEGMENTS
         co8  = loop(circle_pts(cx, cy, RING_OUT_R, N), Z_FLOOR_TOP)
         co26 = loop(circle_pts(cx, cy, RING_OUT_R, N), TOTAL_H)
         ci26 = loop(circle_pts(cx, cy, POCKET_R, N), TOTAL_H)
-        ci16 = loop(circle_pts(cx, cy, POCKET_R, N), Z_BED)
 
-        face_with_holes(i2, [co8])          # moat floor (hex minus ring footprint)
+        face_with_holes(floor_outline, [co8])   # floor (hex minus ring footprint)
         quads(co8, co26)                    # ring outer wall
         quads(co26, ci26)                   # ring top
+        if not HONEYCOMB:
+            ci8 = loop(circle_pts(cx, cy, POCKET_R, N), Z_FLOOR_TOP)
+            quads(ci26, ci8)                # pocket wall down to the pocket floor
+            face_with_holes(ci8, [fh8] if WIRE_HOLE else [])   # flat pocket floor with the wire hole
+            voids = []
+    if FILL and HONEYCOMB:
+        ci16 = loop(circle_pts(cx, cy, POCKET_R, N), Z_BED)
         quads(ci26, ci16)                   # ring inner wall (sensor side)
 
         bed_holes = []
@@ -327,23 +354,27 @@ def build_socket():
 
     # -- verification against analytic volume ---------------------------------------
     hex_area = lambda f: (math.sqrt(3) / 2.0) * f * f
-    expected = (hex_area(OUTER_FLAT) - hex_area(INNER_FLAT)) * TOTAL_H + hex_area(INNER_FLAT) * FLOOR_T
+    expected = (hex_area(OUTER_FLAT) - hex_area(INNER_FLAT)) * Z_WALL_TOP + hex_area(INNER_FLAT) * FLOOR_T
     if WIRE_HOLE:
         expected -= poly_area(hole_pts) * FLOOR_T
     solid_frac = None
     if FILL:
         a_co = poly_area(circle_pts(cx, cy, RING_OUT_R, RING_SEGMENTS))
         a_ci = poly_area(circle_pts(cx, cy, POCKET_R, RING_SEGMENTS))
-        a_void = sum(poly_area(p) for p in voids)
-        a_bore = poly_area(circle_pts(WIRE_CX, WIRE_CY, BORE_R, WIRE_SEGMENTS)) if WIRE_HOLE else 0.0
-        expected += (a_co - a_void - a_bore) * (Z_BED - Z_FLOOR_TOP) + (a_co - a_ci) * (TOTAL_H - Z_BED)
-        solid_frac = (a_ci - a_void - a_bore) / a_ci
+        if HONEYCOMB:
+            a_void = sum(poly_area(p) for p in voids)
+            a_bore = poly_area(circle_pts(WIRE_CX, WIRE_CY, BORE_R, WIRE_SEGMENTS)) if WIRE_HOLE else 0.0
+            expected += (a_co - a_void - a_bore) * (Z_BED - Z_FLOOR_TOP) + (a_co - a_ci) * (TOTAL_H - Z_BED)
+            solid_frac = (a_ci - a_void - a_bore) / a_ci
+        else:
+            expected += (a_co - a_ci) * (TOTAL_H - Z_FLOOR_TOP)
     if SUPPORT_RIBS:
         expected += (poly_area(rib_outer_pts) - sum(poly_area(c) for c in rib_cells)) * Z_RIB_TOP
         print(f"Support grid: {len(rib_cells)} open cells, ribs {SUPPORT_RIB_T:.1f}mm, "
               f"top at z={Z_RIB_TOP:.2f} ({SUPPORT_GAP:.2f}mm under the roof)")
     nm, za, vol = mesh_stats(obj)
-    print(f"Honeycomb cells: {len(voids)}" + (f", solid fraction inside pocket {solid_frac*100:.0f}%" if FILL else ""))
+    if HONEYCOMB:
+        print(f"Honeycomb cells: {len(voids)}" + (f", solid fraction inside pocket {solid_frac*100:.0f}%" if FILL else ""))
     print(f"Non-manifold edges: {nm} (expect 0), zero-area faces: {za} (expect 0)")
     print(f"Volume: {vol:.1f} mm^3 (expected {expected:.1f}) "
           f"{'OK' if abs(vol - expected) < 1.0 else 'MISMATCH - check normals / topology'}")
@@ -354,11 +385,12 @@ def add_sensor_proxy():
     obj = bpy.data.objects.new("SensorProxy", mesh)
     bpy.context.collection.objects.link(obj)
     bm = bmesh.new()
+    d, h, z0 = (SENSOR_D, SENSOR_H, Z_BED) if HONEYCOMB else (CUSHION_D, CUSHION_H, Z_FLOOR_TOP)
     bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=64,
-                          radius1=SENSOR_D / 2.0, radius2=SENSOR_D / 2.0, depth=SENSOR_H)
+                          radius1=d / 2.0, radius2=d / 2.0, depth=h)
     bm.to_mesh(mesh)
     bm.free()
-    obj.location = Vector((CENTER[0], CENTER[1], Z_BED + SENSOR_H / 2.0))
+    obj.location = Vector((CENTER[0], CENTER[1], z0 + h / 2.0))
     obj.display_type = 'WIRE'
     return obj
 
