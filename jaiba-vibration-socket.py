@@ -8,12 +8,23 @@ print("=== TPU HEX SOCKET (piezo vibration damper) ===")
 # Values marked [from tray script] were read from the tray's Blender script.
 PAD_FLAT        = 78.0   # [INNER_TILE_WIDTH]  pad, flat-to-flat
 PAD_HEIGHT      = 5.0    # [INNER_TILE_HEIGHT] pad height -> depth of the underside recess
-WALL_T          = 1.6    # socket wall: 2 mm each side, 2 mm gap to the neighbour on the 84 mm pitch
-FLOOR_T         = 1.6    # floor slab between the underside recess and the cup
+WALL_T          = 2.7    # socket wall: 2 mm each side, 2 mm gap to the neighbour on the 84 mm pitch
+FLOOR_T         = 2.0    # floor slab between the underside recess and the cup
 TOTAL_H         = 26.0   # overall socket height (matches tray WALL_HEIGHT; the sensor ring reaches this)
 WALL_UP         = 0.0    # height of the hex wall ABOVE the floor. 0 = no wall (floor edge is the
                          # outline); 4 = low finger guard; TOTAL_H - floor top = full wall as before.
 FIT_CLEARANCE   = 0.0    # extra room PER SIDE around the pad (see README)
+CORNER_STYLE    = 'round'   # outer hex corners: 'chamfer' (flat cut) or 'round' (smooth arc)
+CORNER_SIZE     = 3.0    # setback from each corner along both edges, mm. 0 = sharp corners.
+                         # The inner hex (the pad recess) always keeps its sharp corners.
+MIN_CORNER_WALL = 0.4    # the corner wall may not get thinner than this (checked)
+
+# ---- SOLID BODY (let the slicer fill it) -------------------------------------
+# True = the whole hex above the floor is ONE solid block (full TOTAL_H, outer hex outline)
+# with only the cylindrical pocket cut out. There is no separate ring, no moat and no
+# WALL_UP wall: set a thin skin (1-2 perimeters), a low-density gyroid infill and a few
+# top/bottom solid layers in the slicer, and the block prints as a soft foam-like hexagon.
+BODY_SOLID      = True
 
 # ---- SENSOR POCKET + SUPPORT FILL ----------------------------------------
 FILL                = True    # False = plain cup (no ring / pocket at all)
@@ -22,10 +33,10 @@ HONEYCOMB           = False   # True = old honeycomb sensor support in the pocke
                               # for gluing the cookie cushion in.
 CUSHION_D           = 64.0    # cookie cushion diameter (viewport proxy + fit printout only)
 CUSHION_H           = 17.0    # cookie cushion thickness
-SENSOR_D            = 68.0    # piezo sensor puck diameter
+SENSOR_D            = 69.0    # piezo sensor puck diameter
 SENSOR_H            = 10.0    # puck height -> top sits flush with TOTAL_H
 SENSOR_CLEARANCE    = 0.25    # per side, pocket radius = SENSOR_D/2 + this -> 68.0 mm pocket
-RING_T              = 1.6     # retaining ring wall around the sensor
+RING_T              = 2.0     # retaining ring wall around the sensor
 FILL_WALL_T         = 2.0     # honeycomb wall thickness (also min solid band
                               # kept between cells and the ring / wire bore)
 CELL_INNER          = 8.0     # honeycomb cell width, flat-to-flat (open space)
@@ -86,21 +97,38 @@ print(f"Z: recess 0..{Z_RECESS_TOP:.1f} | floor ..{Z_FLOOR_TOP:.1f} | " + (f"hon
 if FILL:
     print(f"Sensor pocket r={POCKET_R:.2f}, ring outer r={RING_OUT_R:.2f}" +
           (f", moat at flats {INNER_FLAT/2 - RING_OUT_R:.2f}mm" if WALL_UP > 0 else ", no hex wall above the floor"))
-print(f"Hex wall above the floor: " + (f"{Z_WALL_TOP - Z_FLOOR_TOP:.1f} mm (to z={Z_WALL_TOP:.1f})" if WALL_UP > 0 else "none"))
+print("Body: SOLID hex block with a cylindrical pocket (set skin / gyroid / solid layers in the slicer)" if BODY_SOLID else
+      f"Hex wall above the floor: " + (f"{Z_WALL_TOP - Z_FLOOR_TOP:.1f} mm (to z={Z_WALL_TOP:.1f})" if WALL_UP > 0 else "none"))
+if BODY_SOLID and HONEYCOMB:
+    raise ValueError("BODY_SOLID and HONEYCOMB cannot be combined")
 if OUTER_FLAT > TILE_PITCH + 1e-6:
     print(f"WARNING: outer {OUTER_FLAT:.2f} > tile pitch {TILE_PITCH:.2f}: adjacent sockets will overlap")
 if Z_BED <= Z_FLOOR_TOP:
     raise ValueError("Sensor too tall: no room left above the floor for the support zone")
-if FILL and WALL_UP > 0 and RING_OUT_R > INNER_FLAT / 2.0 - MIN_MOAT:
+if FILL and not BODY_SOLID and WALL_UP > 0 and RING_OUT_R > INNER_FLAT / 2.0 - MIN_MOAT:
     raise ValueError("Sensor ring is too close to (or past) the hex wall")
 if FILL and WIRE_HOLE and WIRE_HOLE_OFFSET + (BORE_R if HONEYCOMB else WIRE_R) > POCKET_R - 0.5:
     raise ValueError("Wire hole/bore comes within 0.5mm of the pocket wall - reduce its diameter")
 if FILL and HONEYCOMB and WIRE_HOLE and WIRE_R <= BORE_R:
     raise ValueError("With HONEYCOMB = True the floor hole must be wider than WIRE_BORE_DIAMETER (it leaves a ledge)")
-if FILL and not HONEYCOMB:
+if (FILL or BODY_SOLID) and not HONEYCOMB:
     depth = TOTAL_H - Z_FLOOR_TOP
     print(f"Pocket {2*POCKET_R:.1f} mm wide, {depth:.1f} mm deep (floor at z={Z_FLOOR_TOP:.1f}). "
           f"Cushion {CUSHION_D:g} x {CUSHION_H:g} leaves {depth - CUSHION_H:+.1f} mm below the top")
+
+if CORNER_SIZE > 0:
+    if CORNER_STYLE not in ('chamfer', 'round'):
+        raise ValueError("CORNER_STYLE must be 'chamfer' or 'round'")
+    side = OUTER_FLAT / math.sqrt(3)
+    corner_wall = 2 * WALL_T / math.sqrt(3)                 # radial wall at the hex corner (outer to inner corner)
+    removed = CORNER_SIZE / 2.0 if CORNER_STYLE == 'chamfer' else CORNER_SIZE * 0.2679   # radial material removed
+    max_size = (corner_wall - MIN_CORNER_WALL) / (0.5 if CORNER_STYLE == 'chamfer' else 0.2679)
+    if corner_wall - removed < MIN_CORNER_WALL - 1e-9:
+        raise ValueError(f"CORNER_SIZE {CORNER_SIZE:g} leaves only {corner_wall - removed:.2f} mm of wall at the corners "
+                         f"(WALL_T {WALL_T:g}). Max for {CORNER_STYLE}: {max(max_size, 0):.2f} mm, or raise WALL_T.")
+    if CORNER_SIZE > side / 2.0 - 1.0:
+        raise ValueError("CORNER_SIZE is too large for the hex side length")
+    print(f"Outer corners: {CORNER_STYLE} {CORNER_SIZE:g} mm (corner wall {corner_wall:.2f} -> {corner_wall - removed:.2f} mm)")
 
 # ---- GEOMETRY HELPERS ------------------------------------------------------
 def hex_corners(cx, cy, flat_width):
@@ -108,6 +136,35 @@ def hex_corners(cx, cy, flat_width):
     s = flat_width / math.sqrt(3)
     return [(cx + s * math.cos(math.radians(30 + 60 * i)),
              cy + s * math.sin(math.radians(30 + 60 * i))) for i in range(6)]
+
+def outer_outline(cx, cy):
+    """Outer hex outline CCW with optional chamfered / rounded corners."""
+    pts = hex_corners(cx, cy, OUTER_FLAT)
+    if CORNER_SIZE <= 0:
+        return pts
+    t = CORNER_SIZE
+    out = []
+    n = len(pts)
+    for i in range(n):
+        P, Pp, Pn = pts[i], pts[i - 1], pts[(i + 1) % n]
+        up = ((Pp[0] - P[0]), (Pp[1] - P[1])); ln = math.hypot(*up); up = (up[0] / ln, up[1] / ln)
+        un = ((Pn[0] - P[0]), (Pn[1] - P[1])); ln = math.hypot(*un); un = (un[0] / ln, un[1] / ln)
+        A = (P[0] + t * up[0], P[1] + t * up[1])      # on the incoming edge
+        B = (P[0] + t * un[0], P[1] + t * un[1])      # on the outgoing edge
+        if CORNER_STYLE == 'chamfer':
+            out += [A, B]
+        elif CORNER_STYLE == 'round':
+            r = t / math.tan(math.radians(30.0))       # tangent length t on a 120 degree corner
+            bis = (up[0] + un[0], up[1] + un[1]); ln = math.hypot(*bis); bis = (bis[0] / ln, bis[1] / ln)
+            dc = r / math.sin(math.radians(60.0))
+            C = (P[0] + bis[0] * dc, P[1] + bis[1] * dc)
+            a0 = math.atan2(A[1] - C[1], A[0] - C[0]); a1 = math.atan2(B[1] - C[1], B[0] - C[0])
+            d = (a1 - a0) % (2 * math.pi)
+            segs = 10
+            out += [(C[0] + r * math.cos(a0 + d * k / segs), C[1] + r * math.sin(a0 + d * k / segs)) for k in range(segs + 1)]
+        else:
+            raise ValueError("CORNER_STYLE must be 'chamfer' or 'round'")
+    return out
 
 def circle_pts(cx, cy, r, n):
     return [(cx + r * math.cos(2 * math.pi * i / n), cy + r * math.sin(2 * math.pi * i / n))
@@ -263,21 +320,26 @@ def build_socket():
         return made
 
     # -- hex shell: outer wall, rims, recess wall, (optional) cup wall ----------
-    o0 = loop(hex_corners(cx, cy, OUTER_FLAT), 0.0)
+    outer_pts = outer_outline(cx, cy)
+    o0 = loop(outer_pts, 0.0)
     i0 = loop(hex_corners(cx, cy, INNER_FLAT), 0.0)
     i1 = loop(hex_corners(cx, cy, INNER_FLAT), Z_RECESS_TOP)
-    quads(o0, i0)                              # bottom rim  (winding corrected by recalc_face_normals below)
+    face_with_holes(o0, [i0])                  # bottom rim: outer outline minus the pad recess
     quads(i0, i1)                              # underside recess wall
-    if WALL_UP > 0:
-        o1 = loop(hex_corners(cx, cy, OUTER_FLAT), Z_WALL_TOP)
+    if BODY_SOLID:
+        o1 = loop(outer_pts, TOTAL_H)
+        quads(o0, o1)                          # outer wall, full height
+        floor_outline = None
+    elif WALL_UP > 0:
+        o1 = loop(outer_pts, Z_WALL_TOP)
         i2 = loop(hex_corners(cx, cy, INNER_FLAT), Z_FLOOR_TOP)
         i3 = loop(hex_corners(cx, cy, INNER_FLAT), Z_WALL_TOP)
         quads(o0, o1)                          # outer wall
         quads(i2, i3)                          # cup wall
-        quads(o1, i3)                          # top rim
+        face_with_holes(o1, [i3])              # top rim
         floor_outline = i2                     # floor top is bounded by the inner hex
     else:
-        o1 = loop(hex_corners(cx, cy, OUTER_FLAT), Z_FLOOR_TOP)
+        o1 = loop(outer_pts, Z_FLOOR_TOP)
         quads(o0, o1)                          # outer wall stops at the floor
         floor_outline = o1                     # floor top reaches the outer edge
 
@@ -290,7 +352,14 @@ def build_socket():
         quads(fh8, fh5)                                   # floor hole wall
 
     voids = []
-    if not FILL:
+    if BODY_SOLID:
+        N = RING_SEGMENTS
+        ci26 = loop(circle_pts(cx, cy, POCKET_R, N), TOTAL_H)
+        ci8 = loop(circle_pts(cx, cy, POCKET_R, N), Z_FLOOR_TOP)
+        face_with_holes(o1, [ci26])             # top face: hex minus the pocket opening
+        quads(ci26, ci8)                        # pocket wall
+        face_with_holes(ci8, [fh8] if WIRE_HOLE else [])   # pocket floor with the wire hole
+    elif not FILL:
         face_with_holes(floor_outline, [fh8] if WIRE_HOLE else [])   # plain cup floor
     else:
         voids = honeycomb_cells() if HONEYCOMB else []
@@ -307,7 +376,7 @@ def build_socket():
             quads(ci26, ci8)                # pocket wall down to the pocket floor
             face_with_holes(ci8, [fh8] if WIRE_HOLE else [])   # flat pocket floor with the wire hole
             voids = []
-    if FILL and HONEYCOMB:
+    if FILL and HONEYCOMB and not BODY_SOLID:
         ci16 = loop(circle_pts(cx, cy, POCKET_R, N), Z_BED)
         quads(ci26, ci16)                   # ring inner wall (sensor side)
 
@@ -354,11 +423,18 @@ def build_socket():
 
     # -- verification against analytic volume ---------------------------------------
     hex_area = lambda f: (math.sqrt(3) / 2.0) * f * f
-    expected = (hex_area(OUTER_FLAT) - hex_area(INNER_FLAT)) * Z_WALL_TOP + hex_area(INNER_FLAT) * FLOOR_T
+    outer_area = poly_area(outer_pts)
+    expected = (outer_area - hex_area(INNER_FLAT)) * Z_WALL_TOP + hex_area(INNER_FLAT) * FLOOR_T
     if WIRE_HOLE:
         expected -= poly_area(hole_pts) * FLOOR_T
     solid_frac = None
-    if FILL:
+    if BODY_SOLID:
+        a_ci = poly_area(circle_pts(cx, cy, POCKET_R, RING_SEGMENTS))
+        expected = (outer_area * TOTAL_H - hex_area(INNER_FLAT) * Z_RECESS_TOP
+                    - a_ci * (TOTAL_H - Z_FLOOR_TOP))
+        if WIRE_HOLE:
+            expected -= poly_area(hole_pts) * FLOOR_T
+    elif FILL:
         a_co = poly_area(circle_pts(cx, cy, RING_OUT_R, RING_SEGMENTS))
         a_ci = poly_area(circle_pts(cx, cy, POCKET_R, RING_SEGMENTS))
         if HONEYCOMB:
